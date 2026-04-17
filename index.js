@@ -24,87 +24,36 @@ function sanitizeFilePart(value) {
 }
 
 function extractWorkerDataFromPageText(pageText) {
-  const text = pageText.replace(/\r/g, "");
-  const lines = text
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
+  const text = String(pageText || "");
+  const flatText = text.replace(/\r/g, " ").replace(/\n/g, " ").replace(/\s+/g, " ").trim();
 
   const dniRegex = /\b([XYZ0-9][0-9A-Z]{7}[A-Z])\b/i;
 
-  let rowLine = null;
+  const mainMatch = flatText.match(
+    /TREBALLADOR\/A.*?DNI\s+(.+?)\s+PEON\s+\d{1,2}\s+[A-Z]{3}\s+\d{2}\s+([XYZ0-9][0-9A-Z]{7}[A-Z])\b/i
+  );
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    if (line.includes("TREBALLADOR/A") && line.includes("DNI")) {
-      for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
-        if (dniRegex.test(lines[j])) {
-          rowLine = lines[j];
-          break;
-        }
-      }
-      if (rowLine) break;
-    }
+  if (mainMatch) {
+    return {
+      name: sanitizeFilePart(mainMatch[1]),
+      dni: sanitizeFilePart(mainMatch[2].toUpperCase())
+    };
   }
 
-  if (!rowLine) {
-    const match = text.match(
-      /TREBALLADOR\/A[\s\S]{0,300}?DNI\s+([A-ZÀ-ÿ,' -]+?)\s+PEON\b[\s\S]{0,100}?\b([XYZ0-9][0-9A-Z]{7}[A-Z])\b/i
-    );
-    if (match) {
-      return {
-        name: sanitizeFilePart(match[1]),
-        dni: sanitizeFilePart(match[2].toUpperCase())
-      };
-    }
-    return null;
+  const dniMatch = flatText.match(dniRegex);
+
+  const topNameMatch = flatText.match(
+    /^([A-ZÀ-ÿ,' -]{4,}?)\s+(?:AV|CL|CM|MS|LG|PZ)\b/
+  );
+
+  if (topNameMatch && dniMatch) {
+    return {
+      name: sanitizeFilePart(topNameMatch[1]),
+      dni: sanitizeFilePart(dniMatch[1].toUpperCase())
+    };
   }
 
-  const dniMatch = rowLine.match(dniRegex);
-  if (!dniMatch) return null;
-
-  const dni = dniMatch[1].toUpperCase();
-  const dniIndex = rowLine.indexOf(dni);
-  const beforeDni = rowLine.slice(0, dniIndex).trim();
-
-  let name = beforeDni;
-
-  if (beforeDni.includes(" PEON ")) {
-    name = beforeDni.split(" PEON ")[0].trim();
-  } else if (beforeDni.endsWith(" PEON")) {
-    name = beforeDni.slice(0, -5).trim();
-  } else {
-    const tokens = beforeDni.split(/\s+/);
-    const monthSet = new Set([
-      "GEN", "FEB", "MAR", "ABR", "MAI", "JUN",
-      "JUL", "AGO", "SET", "OCT", "NOV", "DES",
-      "ENE", "APR", "MAY", "AUG", "SEP", "DEC"
-    ]);
-
-    let cutIndex = tokens.length;
-    for (let i = 0; i < tokens.length; i++) {
-      if (
-        monthSet.has(tokens[i].toUpperCase()) ||
-        /^\d{1,2}$/.test(tokens[i]) ||
-        /^\d+$/.test(tokens[i])
-      ) {
-        cutIndex = i - 1;
-        break;
-      }
-    }
-
-    if (cutIndex > 0) {
-      name = tokens.slice(0, cutIndex).join(" ").trim();
-    }
-  }
-
-  if (!name) return null;
-
-  return {
-    name: sanitizeFilePart(name),
-    dni: sanitizeFilePart(dni)
-  };
+  return null;
 }
 
 async function extractTextsPerPage(pdfBuffer) {
@@ -126,7 +75,7 @@ async function extractTextsPerPage(pdfBuffer) {
 
     const text = content.items
       .map((item) => ("str" in item ? item.str : ""))
-      .join("\n");
+      .join(" ");
 
     pages.push(text);
   }
@@ -244,6 +193,7 @@ app.post("/split-pdf", upload.single("file"), async (req, res) => {
       const worker = extractWorkerDataFromPageText(pageText);
 
       let fileName = `pagina-${i + 1}.pdf`;
+
       if (worker?.name && worker?.dni) {
         fileName = `${worker.name}_${worker.dni}.pdf`;
       }
