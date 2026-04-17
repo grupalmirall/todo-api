@@ -19,8 +19,11 @@ function sanitizeFilePart(value) {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^\w,\- ]+/g, "")
+    .replace(/\bCATEGORIA\b/gi, "")
     .trim()
-    .replace(/\s+/g, "_");
+    .replace(/\s+/g, "_")
+    .replace(/^CATEGORIA_+/i, "")
+    .replace(/^_+|_+$/g, "");
 }
 
 function extractWorkerDataFromPageText(pageText) {
@@ -195,7 +198,8 @@ app.post("/split-pdf", upload.single("file"), async (req, res) => {
       let fileName = `pagina-${i + 1}.pdf`;
 
       if (worker?.name && worker?.dni) {
-        fileName = `${worker.name}_${worker.dni}.pdf`;
+        const cleanName = worker.name.replace(/^CATEGORIA_+/i, "");
+        fileName = `${cleanName}_${worker.dni}.pdf`;
       }
 
       archive.append(Buffer.from(newPdfBytes), { name: fileName });
