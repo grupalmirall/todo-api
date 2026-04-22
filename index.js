@@ -19,31 +19,35 @@ function sanitizeFilePart(value) {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^\w,\- ]+/g, "")
-    .replace(/\bCATEGORIA\b/gi, "")
     .trim()
     .replace(/\s+/g, "_")
-    .replace(/^CATEGORIA_+/i, "")
     .replace(/^_+|_+$/g, "");
 }
 
 function extractWorkerDataFromPageText(pageText) {
   const text = String(pageText || "");
-  const flatText = text.replace(/\r/g, " ").replace(/\n/g, " ").replace(/\s+/g, " ").trim();
+  const flatText = text
+    .replace(/\r/g, " ")
+    .replace(/\n/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
-  const dniRegex = /\b([XYZ0-9][0-9A-Z]{7}[A-Z])\b/i;
-
+  // Patró principal del model real:
+  // TREBALLADOR/A CATEGORIA NºMATRIC ANTIGUITAT DNI
+  // LAHCEN AZLOU PEON 19 AGO 22 X8156946L
   const mainMatch = flatText.match(
-    /TREBALLADOR\/A.*?DNI\s+(.+?)\s+PEON\s+\d{1,2}\s+[A-Z]{3}\s+\d{2}\s+([XYZ0-9][0-9A-Z]{7}[A-Z])\b/i
+    /TREBALLADOR\/A\s+CATEGORIA\s+N[º°]?MATRIC\s+ANTIGUITAT\s+DNI\s+(.+?)\s+PEON\s+\d+\s+[A-ZÀ-ÿ]{3,4}\s+\d{2}\s+([XYZ0-9][0-9A-Z]{7}[A-Z])\b/i
   );
 
   if (mainMatch) {
     return {
-      name: sanitizeFilePart(mainMatch[1]),
+      name: sanitizeFilePart(mainMatch[1].replace(/\s*,\s*/g, "_")),
       dni: sanitizeFilePart(mainMatch[2].toUpperCase())
     };
   }
 
-  const dniMatch = flatText.match(dniRegex);
+  // Fallback: agafar la línia superior del treballador i el primer DNI vàlid
+  const dniMatch = flatText.match(/\b([XYZ0-9][0-9A-Z]{7}[A-Z])\b/i);
 
   const topNameMatch = flatText.match(
     /^([A-ZÀ-ÿ,' -]{4,}?)\s+(?:AV|CL|CM|MS|LG|PZ)\b/
@@ -51,12 +55,93 @@ function extractWorkerDataFromPageText(pageText) {
 
   if (topNameMatch && dniMatch) {
     return {
-      name: sanitizeFilePart(topNameMatch[1]),
+      name: sanitizeFilePart(topNameMatch[1].replace(/\s*,\s*/g, "_")),
       dni: sanitizeFilePart(dniMatch[1].toUpperCase())
     };
   }
 
   return null;
+}
+
+function extractPayrollMonthFromPageText(pageText) {
+  const text = String(pageText || "");
+  const flatText = text
+    .replace(/\r/g, " ")
+    .replace(/\n/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+
+  const monthMap = {
+    GEN: "gener",
+    FEB: "febrer",
+    MAR: "marc",
+    ABR: "abril",
+    MAI: "maig",
+    MAY: "maig",
+    JUN: "juny",
+    JUL: "juliol",
+    AGO: "agost",
+    SEP: "setembre",
+    SET: "setembre",
+    OCT: "octubre",
+    NOV: "novembre",
+    DES: "desembre",
+    DIC: "desembre"
+  };
+
+  // Patró principal del PDF real:
+  // PERÍODE ... 01 MAR 26 a 31 MAR 26
+  let match = flatText.match(/\b\d{1,2}\s+([A-ZÀ-ÿ]{3,4})\s+(\d{2})\s+A\s+\d{1,2}\s+[A-ZÀ-ÿ]{3,4}\s+\d{2}\b/i);
+  if (match) {
+    const monthRaw = match[1]
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toUpperCase();
+    const year2 = match[2];
+    const month = monthMap[monthRaw] || monthRaw.toLowerCase();
+    const year = `20${year2}`;
+    return sanitizeFilePart(`${month}_${year}`);
+  }
+
+  // Fallback:
+  // DATA ... 31 MARÇ 2026
+  match = flatText.match(/\b\d{1,2}\s+([A-ZÀ-ÿ]{3,10})\s+(\d{4})\b/i);
+  if (match) {
+    const raw = match[1]
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toUpperCase();
+
+    const normalizedMap = {
+      GENER: "gener",
+      FEBRER: "febrer",
+      MARC: "marc",
+      MAR: "marc",
+      ABRIL: "abril",
+      MAIG: "maig",
+      MAYO: "maig",
+      JUNY: "juny",
+      JUNIO: "juny",
+      JULIOL: "juliol",
+      JULIO: "juliol",
+      AGOST: "agost",
+      AGOSTO: "agost",
+      SETEMBRE: "setembre",
+      SEPTIEMBRE: "setembre",
+      OCTUBRE: "octubre",
+      NOVEMBRE: "novembre",
+      NOVIEMBRE: "novembre",
+      DESEMBRE: "desembre",
+      DICIEMBRE: "desembre"
+    };
+
+    const month = normalizedMap[raw] || raw.toLowerCase();
+    const year = match[2];
+    return sanitizeFilePart(`${month}_${year}`);
+  }
+
+  return "mes_desconegut";
 }
 
 async function extractTextsPerPage(pdfBuffer) {
@@ -193,13 +278,14 @@ app.post("/split-pdf", upload.single("file"), async (req, res) => {
 
       const newPdfBytes = await newPdf.save();
       const pageText = pageTexts[i] || "";
+
       const worker = extractWorkerDataFromPageText(pageText);
+      const payrollMonth = extractPayrollMonthFromPageText(pageText);
 
       let fileName = `pagina-${i + 1}.pdf`;
 
       if (worker?.name && worker?.dni) {
-        const cleanName = worker.name.replace(/^CATEGORIA_+/i, "");
-        fileName = `${cleanName}_${worker.dni}.pdf`;
+        fileName = `${worker.name}-${worker.dni}-${payrollMonth}.pdf`;
       }
 
       archive.append(Buffer.from(newPdfBytes), { name: fileName });
